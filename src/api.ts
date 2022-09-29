@@ -82,7 +82,7 @@ export class Endpoint{
 export class Shazam{
     static MAX_TIME_SCEONDS = 8;
 
-    private endpoint: Endpoint;
+    public endpoint: Endpoint;
     constructor(timeZone?: string){
         this.endpoint = new Endpoint(timeZone ?? TIME_ZONE);
     }
