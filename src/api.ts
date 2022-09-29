@@ -45,7 +45,12 @@ export class Endpoint{
         }
     }
 
-    async sendRecognizeRequest(signature: DecodedMessage): Promise<{ title: string, artist: string, album?: string, year?: string } | null>{
+    async sendRecognizeRequest(url: string, body: string){
+        const fetch = global.fetch ?? nFetch;
+        return await (await fetch(url, { body, headers: this.headers(), method: "POST" })).json();
+    }
+
+    async formatAndSendRecognizeRequest(signature: DecodedMessage): Promise<{ title: string, artist: string, album?: string, year?: string } | null>{
         let data = {
             'timezone': this.timezone,
             'signature': {
@@ -59,12 +64,7 @@ export class Endpoint{
         const url = new URL(this.url());
         Object.entries(this.params()).forEach(([a, b]) => url.searchParams.append(a, b));
 
-        const fetch = global.fetch ?? nFetch;
-        let response = await (await fetch(url.toString(), {
-            body: JSON.stringify(data),
-            headers: this.headers(),
-            method: "POST",
-        })).json();
+        let response = await this.sendRecognizeRequest(url.toString(), JSON.stringify(data));
         if(response.matches.length === 0) return null;
 
         const
@@ -97,7 +97,7 @@ export class Shazam{
                 break;
             }
             callback && callback("transmitting");
-            let results = await this.endpoint.sendRecognizeRequest(signature);
+            let results = await this.endpoint.formatAndSendRecognizeRequest(signature);
             if(results !== null) return results;
         }
         return null;
