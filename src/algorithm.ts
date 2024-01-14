@@ -1,4 +1,4 @@
-import { fft } from 'numjs';
+import { ComplexNumber, fft } from './fft';
 import { DecodedMessage, FrequencyBand, FrequencyPeak } from "./signature-format";
 
 const hanning = (m: number) => Array(m)
@@ -6,9 +6,6 @@ const hanning = (m: number) => Array(m)
         .map((_, n) => 0.5 - 0.5 * Math.cos((2 * Math.PI * n) / (m - 1)));
 
 const pyMod = (a: number, b: number) => (a % b) >= 0 ? (a % b) : b + (a % b);
-
-const MAX_TIME_SECONDS = 8;
-const MAX_PEAKS = 255;
 
 const HANNING_MATRIX = hanning(2050).slice(1, 2049);
 
@@ -72,15 +69,8 @@ export class SignatureGenerator{
         if(this.inputPendingProcessing.length - this.samplesProcessed < 128){
             return null;
         }
-
-        while(
-            ((this.inputPendingProcessing.length - this.samplesProcessed) >= 128) && 
-            (((this.nextSignature.numberSamples / this.nextSignature.sampleRateHz) < MAX_TIME_SECONDS) ||
-            (Object.values(this.nextSignature.frequencyBandToSoundPeaks).map(e => e.length).reduce((a, b) => a+b, 0) < MAX_PEAKS))
-            ){
-                this.processInput(this.inputPendingProcessing.slice(this.samplesProcessed, this.samplesProcessed + 128));
-                this.samplesProcessed += 128;
-            }
+        this.processInput(this.inputPendingProcessing);
+        this.samplesProcessed += this.inputPendingProcessing.length;
         let returnedSignature = this.nextSignature;
         this.initFields();
         
@@ -91,7 +81,10 @@ export class SignatureGenerator{
         this.nextSignature.numberSamples += s16leMonoSamples.length;
         for(let positionOfChunk = 0; positionOfChunk < s16leMonoSamples.length; positionOfChunk += 128){
             this.doFFT(s16leMonoSamples.slice(positionOfChunk, positionOfChunk + 128));
-            this.doPeakSpreadingAndRecognition();
+            this.doPeakSpreading();
+            if(this.spreadFFTsOutput.written >= 46) {
+                this.doPeakRecognition();
+            }
         }
     }
 
@@ -113,8 +106,8 @@ export class SignatureGenerator{
 
         // The premultiplication of the array is for applying a windowing function before the DFT (slighty rounded Hanning without zeros at edges)
 
-        let results = (fft(excerptFromRingBuffer.map((v, i) => ([v * HANNING_MATRIX[i], 0]) as any)).tolist() as number[][])
-            .map((e: number[]) => ((e[0] * e[0]) + (e[1] * e[1])) / (1 << 17))
+        let results = fft(excerptFromRingBuffer.map((v, i) => (new ComplexNumber(v * HANNING_MATRIX[i], 0))))
+            .map((e: ComplexNumber) => (e.imag * e.imag + e.real * e.real) / (1 << 17))
             .map((e: number) => e < 0.0000000001 ? 0.0000000001 : e).slice(0, 1025);
         
         if(results.length != 1025){
@@ -122,12 +115,6 @@ export class SignatureGenerator{
         }
 
         this.fftOutputs.append(new Float64Array(results));
-    }
-
-    doPeakSpreadingAndRecognition(){
-        this.doPeakSpreading();
-        if(this.spreadFFTsOutput.written >= 46)
-            this.doPeakRecognition();
     }
 
     doPeakSpreading(){
@@ -199,11 +186,11 @@ export class SignatureGenerator{
                         let band;
                         if(frequencyHz < 250){
                             continue;
-                        } else if(frequencyHz < 520){
+                        } else if(frequencyHz <= 520){
                             band = FrequencyBand._250_520;
-                        } else if(frequencyHz < 1450){
+                        } else if(frequencyHz <= 1450){
                             band = FrequencyBand._520_1450;
-                        } else if(frequencyHz < 3500){
+                        } else if(frequencyHz <= 3500){
                             band = FrequencyBand._1450_3500;
                         } else if(frequencyHz <= 5500){
                             band = FrequencyBand._3500_5500;

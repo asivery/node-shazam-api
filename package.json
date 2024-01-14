@@ -19,7 +19,6 @@
   },
   "dependencies": {
     "buffer": "^6.0.3",
-    "node-fetch": "^2.6.7",
-    "numjs": "^0.16.1"
+    "node-fetch": "^2.6.7"
   }
 }
