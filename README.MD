@@ -17,13 +17,13 @@ console.log(songData);
 ```
 
 The data passed to s16LEToSamplesArray needs to be raw PCM with:
-- Sample rate set to 8000Hz
+- Sample rate set to 16000Hz
 - Bit depth set to 16 bits
 - 1 channel of audio
 
 Such a file can be generated with ffmpeg using the command:
 ```
-ffmpeg -i <source file> -ar 8000 -ac 1 -f s16le test.pcm
+ffmpeg -i <source file> -ar 16000 -ac 1 -f s16le test.pcm
 ```
 
 Or within node or the browser thanks to [ffmpeg.wasm](https://www.npmjs.com/package/@ffmpeg/ffmpeg)
