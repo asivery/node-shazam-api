@@ -1,6 +1,7 @@
 import { SignatureGenerator } from "./algorithm";
 import { DecodedMessage } from "./signature-format";
 import nFetch from 'node-fetch';
+import { ShazamRoot } from "./types";
 
 const TIME_ZONE = "Europe/Paris";
 
@@ -50,7 +51,7 @@ export class Endpoint{
         return await (await fetch(url, { body, headers: this.headers(), method: "POST" })).json();
     }
 
-    async formatAndSendRecognizeRequest(signature: DecodedMessage): Promise<{ title: string, artist: string, album?: string, year?: string } | null>{
+    async formatAndSendRecognizeRequest(signature: DecodedMessage): Promise<ShazamRoot | null>{
         let data = {
             'timezone': this.timezone,
             'signature': {
@@ -67,15 +68,7 @@ export class Endpoint{
         let response = await this.sendRecognizeRequest(url.toString(), JSON.stringify(data));
         if(response.matches.length === 0) return null;
 
-        const
-            trackData = response.track,
-            mainSection = trackData.sections.find((e: any) => e.type === "SONG");
-        const
-            title = trackData.title,
-            artist = trackData.subtitle,
-            album = mainSection.metadata.find((e: any) => e.title === "Album")?.text,
-            year = mainSection.metadata.find((e: any) => e.title === "Released")?.text;
-        return { title, artist, album, year };
+        return response as ShazamRoot;
     }
 }
 
@@ -88,15 +81,31 @@ export class Shazam{
     }
 
     async recognizeSong(samples: number[], callback?: ((state: "generating" | "transmitting") => void)){
-        callback && callback("generating");
+        let response = await this.fullRecognizeSong(samples, callback);
+        if(!response) return null;
+
+        const
+            trackData = response.track,
+            mainSection = trackData.sections.find((e: any) => e.type === "SONG")!;
+        const
+            title = trackData.title,
+            artist = trackData.subtitle,
+            album = mainSection.metadata!.find(e => e.title === "Album")?.text,
+            year = mainSection.metadata!.find(e => e.title === "Released")?.text;
+        return { title, artist, album, year };
+
+    }
+
+    async fullRecognizeSong(samples: number[], callback?: ((state: "generating" | "transmitting") => void)){
+        callback?.("generating");
         let generator = this.createSignatureGenerator(samples);
         while(true){
-            callback && callback("generating");
+            callback?.("generating");
             const signature = generator.getNextSignature();
             if(!signature){
                 break;
             }
-            callback && callback("transmitting");
+            callback?.("transmitting");
             let results = await this.endpoint.formatAndSendRecognizeRequest(signature);
             if(results !== null) return results;
         }
