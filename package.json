@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "buffer": "^6.0.3",
+    "fft.js": "^4.0.4",
     "node-fetch": "^2.6.7"
   }
 }

@@ -1,11 +1,14 @@
-import { ComplexNumber, fft } from './fft';
 import { DecodedMessage, FrequencyBand, FrequencyPeak } from "./signature-format";
+import FFT from 'fft.js';
 
 const hanning = (m: number) => Array(m)
         .fill(0)
         .map((_, n) => 0.5 - 0.5 * Math.cos((2 * Math.PI * n) / (m - 1)));
 
 const pyMod = (a: number, b: number) => (a % b) >= 0 ? (a % b) : b + (a % b);
+
+const MAX_TIME_SECONDS = 8;
+const MAX_PEAKS = 255;
 
 const HANNING_MATRIX = hanning(2050).slice(1, 2049);
 
@@ -53,7 +56,7 @@ export class SignatureGenerator{
         this.nextSignature.numberSamples = 0;
         this.nextSignature.frequencyBandToSoundPeaks = {};
     }
-    
+
     constructor(){
         this.inputPendingProcessing = [];
         this.samplesProcessed = 0;
@@ -69,11 +72,18 @@ export class SignatureGenerator{
         if(this.inputPendingProcessing.length - this.samplesProcessed < 128){
             return null;
         }
-        this.processInput(this.inputPendingProcessing);
-        this.samplesProcessed += this.inputPendingProcessing.length;
+
+        while(
+            ((this.inputPendingProcessing.length - this.samplesProcessed) >= 128) && 
+            (((this.nextSignature.numberSamples / this.nextSignature.sampleRateHz) < MAX_TIME_SECONDS) ||
+            (Object.values(this.nextSignature.frequencyBandToSoundPeaks).map(e => e.length).reduce((a, b) => a+b, 0) < MAX_PEAKS))
+            ){
+                this.processInput(this.inputPendingProcessing.slice(this.samplesProcessed, this.samplesProcessed + 128));
+                this.samplesProcessed += 128;
+            }
         let returnedSignature = this.nextSignature;
         this.initFields();
-        
+
         return returnedSignature;
     }
 
@@ -81,10 +91,7 @@ export class SignatureGenerator{
         this.nextSignature.numberSamples += s16leMonoSamples.length;
         for(let positionOfChunk = 0; positionOfChunk < s16leMonoSamples.length; positionOfChunk += 128){
             this.doFFT(s16leMonoSamples.slice(positionOfChunk, positionOfChunk + 128));
-            this.doPeakSpreading();
-            if(this.spreadFFTsOutput.written >= 46) {
-                this.doPeakRecognition();
-            }
+            this.doPeakSpreadingAndRecognition();
         }
     }
 
@@ -94,7 +101,7 @@ export class SignatureGenerator{
             batchOf128S16leMonoSamples.length,
             ...batchOf128S16leMonoSamples
         );
-        
+
         this.ringBufferOfSamples.position += batchOf128S16leMonoSamples.length;
         this.ringBufferOfSamples.position %= 2048;
         this.ringBufferOfSamples.written += batchOf128S16leMonoSamples.length;
@@ -104,17 +111,29 @@ export class SignatureGenerator{
             ...this.ringBufferOfSamples.list.slice(0, this.ringBufferOfSamples.position),
         ] as number[]);
 
+        const fft = new FFT(excerptFromRingBuffer.length);
+        const out = fft.createComplexArray();
+        fft.realTransform(out, excerptFromRingBuffer.map((v, i) => (v * HANNING_MATRIX[i])));
         // The premultiplication of the array is for applying a windowing function before the DFT (slighty rounded Hanning without zeros at edges)
+        let results = Array(1025).fill(0);
+        for(let i = 0; i<out.length; i += 2) {
+            const e = Math.sqrt((out[i] * out[i]) + (out[i + 1] * out[i + 1]));
+            results[i / 2] = Math.max(0.0000000001, e);
+        }
 
-        let results = fft(excerptFromRingBuffer.map((v, i) => (new ComplexNumber(v * HANNING_MATRIX[i], 0))))
-            .map((e: ComplexNumber) => (e.imag * e.imag + e.real * e.real) / (1 << 17))
-            .map((e: number) => e < 0.0000000001 ? 0.0000000001 : e).slice(0, 1025);
-        
+        results = results.slice(0, 1025);
+
         if(results.length != 1025){
             console.log("ASSERT FAILED!");
         }
 
         this.fftOutputs.append(new Float64Array(results));
+    }
+
+    doPeakSpreadingAndRecognition(){
+        this.doPeakSpreading();
+        if(this.spreadFFTsOutput.written >= 46)
+            this.doPeakRecognition();
     }
 
     doPeakSpreading(){
@@ -173,10 +192,10 @@ export class SignatureGenerator{
                         let peakMagnitude = Math.log(Math.max(1 / 64, fftMinus46[binPosition])) * 1477.3 + 6144,
                             peakMagnitudeBefore = Math.log(Math.max(1 / 64, fftMinus46[binPosition-1])) * 1477.3 + 6144,
                             peakMagnitudeAfter = Math.log(Math.max(1 / 64, fftMinus46[binPosition+1])) * 1477.3 + 6144;
-                        
+
                         let peakVariation1 = peakMagnitude * 2 - peakMagnitudeBefore - peakMagnitudeAfter,
                             peakVariation2 = (peakMagnitudeAfter - peakMagnitudeBefore) * 32 / peakVariation1;
-                        
+
                         let correctedPeakFrequencyBin = binPosition * 64 + peakVariation2;
                         if(peakVariation1 <= 0){
                             console.log("Assert 2 failed - " + peakVariation1);
@@ -186,11 +205,11 @@ export class SignatureGenerator{
                         let band;
                         if(frequencyHz < 250){
                             continue;
-                        } else if(frequencyHz <= 520){
+                        } else if(frequencyHz < 520){
                             band = FrequencyBand._250_520;
-                        } else if(frequencyHz <= 1450){
+                        } else if(frequencyHz < 1450){
                             band = FrequencyBand._520_1450;
-                        } else if(frequencyHz <= 3500){
+                        } else if(frequencyHz < 3500){
                             band = FrequencyBand._1450_3500;
                         } else if(frequencyHz <= 5500){
                             band = FrequencyBand._3500_5500;
