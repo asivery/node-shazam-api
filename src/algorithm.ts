@@ -72,18 +72,11 @@ export class SignatureGenerator{
         if(this.inputPendingProcessing.length - this.samplesProcessed < 128){
             return null;
         }
-
-        while(
-            ((this.inputPendingProcessing.length - this.samplesProcessed) >= 128) && 
-            (((this.nextSignature.numberSamples / this.nextSignature.sampleRateHz) < MAX_TIME_SECONDS) ||
-            (Object.values(this.nextSignature.frequencyBandToSoundPeaks).map(e => e.length).reduce((a, b) => a+b, 0) < MAX_PEAKS))
-            ){
-                this.processInput(this.inputPendingProcessing.slice(this.samplesProcessed, this.samplesProcessed + 128));
-                this.samplesProcessed += 128;
-            }
+        this.processInput(this.inputPendingProcessing);
+        this.samplesProcessed += this.inputPendingProcessing.length;
         let returnedSignature = this.nextSignature;
         this.initFields();
-
+        
         return returnedSignature;
     }
 
