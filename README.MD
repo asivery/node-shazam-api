@@ -1,4 +1,4 @@
-## Shazam Api for node-js
+## Shazam Api for JavaScript
 
 This library is heavily based on [Numenorean's work](https://github.com/Numenorean/ShazamAPI).
 
@@ -27,3 +27,7 @@ ffmpeg -i <source file> -ar 16000 -ac 1 -f s16le test.pcm
 ```
 
 Or within node or the browser thanks to [ffmpeg.wasm](https://www.npmjs.com/package/@ffmpeg/ffmpeg)
+
+### Using within a browser
+
+To use this project within a browser, you need to deploy a userscript which will let you bypass CORS while accessing the Shazam servers.
