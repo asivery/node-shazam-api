@@ -209,7 +209,6 @@ export class DecodedMessage{
             const
                 frequencyBand = x[0] as number,
                 frequencyPeaks = x[1] as FrequencyPeak[];
-
             let peaksBuffer: number[] = [];
 
             let fftPassNumber = 0;

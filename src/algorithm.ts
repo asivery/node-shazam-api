@@ -1,21 +1,12 @@
 import { DecodedMessage, FrequencyBand, FrequencyPeak } from "./signature-format";
+import { HANNING_MATRIX } from "./hanning";
 import FFT from 'fft.js';
 
-const hanning = (m: number) => Array(m)
-        .fill(0)
-        .map((_, n) => 0.5 - 0.5 * Math.cos((2 * Math.PI * n) / (m - 1)));
-
 const pyMod = (a: number, b: number) => (a % b) >= 0 ? (a % b) : b + (a % b);
-
-const MAX_TIME_SECONDS = 8;
-const MAX_PEAKS = 255;
-
-const HANNING_MATRIX = hanning(2050).slice(1, 2049);
 
 export class RingBuffer<T> {
     public list: (T|null)[];
     public position: number = 0;
-    public written: number = 0;
 
     constructor(public bufferSize: number, defaultValue?: T | (() => T)){
         if(typeof defaultValue === 'function'){
@@ -25,74 +16,53 @@ export class RingBuffer<T> {
         }
     }
 
-    append(value: T){
-        this.list[this.position] = value;
-        this.position++;
-        this.written++;
-        this.position %= this.bufferSize;
-    }
 }
 
 export class SignatureGenerator{
-    // @ts-ignore
-    private inputPendingProcessing: number[];
-    // @ts-ignore
-    private samplesProcessed: number;
-    // @ts-ignore
-    private ringBufferOfSamples: RingBuffer<number>;
-    // @ts-ignore
-    private fftOutputs: RingBuffer<Float64Array>;
-    // @ts-ignore
-    private spreadFFTsOutput: RingBuffer<Float64Array>;
-    // @ts-ignore
-    private nextSignature: DecodedMessage;
+    private ringBufferOfSamples!: RingBuffer<number>;
+    private fftOutputs!: RingBuffer<Float32Array>;
+    private spreadFFTsOutput!: RingBuffer<Float32Array>;
+    private num_spread_ffts_done!: number;
+    private nextSignature!: DecodedMessage;
 
     private initFields(){
         this.ringBufferOfSamples = new RingBuffer<number>(2048, 0);
-        this.fftOutputs = new RingBuffer<Float64Array>(256, () => new Float64Array(Array(1025).fill(0)));
-        this.spreadFFTsOutput = new RingBuffer<Float64Array>(256, () => new Float64Array(Array(1025).fill(0)));
+        this.fftOutputs = new RingBuffer<Float32Array>(256, () => new Float32Array(Array(1025).fill(0)));
+        this.spreadFFTsOutput = new RingBuffer<Float32Array>(256, () => new Float32Array(Array(1025).fill(0)));
         this.nextSignature = new DecodedMessage();
         this.nextSignature.sampleRateHz = 16000;
         this.nextSignature.numberSamples = 0;
         this.nextSignature.frequencyBandToSoundPeaks = {};
+        this.num_spread_ffts_done = 0;
     }
 
     constructor(){
-        this.inputPendingProcessing = [];
-        this.samplesProcessed = 0;
-
         this.initFields();
     }
 
-    feedInput(s16leMonoSamples: number[]){
-        this.inputPendingProcessing = this.inputPendingProcessing.concat(s16leMonoSamples);
-    }
+    getSignature(s16leMonoSamples: number[]): DecodedMessage | null {
+        const sliceLength = Math.min(12 * 16000, s16leMonoSamples.length);
 
-    getNextSignature(): DecodedMessage | null {
-        if(this.inputPendingProcessing.length - this.samplesProcessed < 128){
-            return null;
+        if(s16leMonoSamples.length > 12 * 16000) {
+            const middle = Math.floor(s16leMonoSamples.length / 2);
+            s16leMonoSamples = s16leMonoSamples.slice(middle - 6 * 16000, middle + 6 * 16000);
         }
 
-        while(
-            ((this.inputPendingProcessing.length - this.samplesProcessed) >= 128) && 
-            (((this.nextSignature.numberSamples / this.nextSignature.sampleRateHz) < MAX_TIME_SECONDS) ||
-            (Object.values(this.nextSignature.frequencyBandToSoundPeaks).map(e => e.length).reduce((a, b) => a+b, 0) < MAX_PEAKS))
-            ){
-                this.processInput(this.inputPendingProcessing.slice(this.samplesProcessed, this.samplesProcessed + 128));
-                this.samplesProcessed += 128;
-            }
+        s16leMonoSamples = s16leMonoSamples.slice(0, sliceLength);
+
+        this.nextSignature.numberSamples += s16leMonoSamples.length;
+        for(let i = 0; i<s16leMonoSamples.length; i+= 128) {
+            this.doFFT(s16leMonoSamples.slice(i, i + 128));
+            this.doPeakSpreading();
+            this.num_spread_ffts_done++;
+            if(this.num_spread_ffts_done >= 46)
+                this.doPeakRecognition();
+
+        }
         let returnedSignature = this.nextSignature;
         this.initFields();
 
         return returnedSignature;
-    }
-
-    processInput(s16leMonoSamples: number[]){
-        this.nextSignature.numberSamples += s16leMonoSamples.length;
-        for(let positionOfChunk = 0; positionOfChunk < s16leMonoSamples.length; positionOfChunk += 128){
-            this.doFFT(s16leMonoSamples.slice(positionOfChunk, positionOfChunk + 128));
-            this.doPeakSpreadingAndRecognition();
-        }
     }
 
     doFFT(batchOf128S16leMonoSamples: number[]){
@@ -104,90 +74,73 @@ export class SignatureGenerator{
 
         this.ringBufferOfSamples.position += batchOf128S16leMonoSamples.length;
         this.ringBufferOfSamples.position %= 2048;
-        this.ringBufferOfSamples.written += batchOf128S16leMonoSamples.length;
 
         let excerptFromRingBuffer = ([
             ...this.ringBufferOfSamples.list.slice(this.ringBufferOfSamples.position),
             ...this.ringBufferOfSamples.list.slice(0, this.ringBufferOfSamples.position),
-        ] as number[]);
+        ] as number[]).map((v, i) => (v * HANNING_MATRIX[i]));
 
         const fft = new FFT(excerptFromRingBuffer.length);
         const out = fft.createComplexArray();
-        fft.realTransform(out, excerptFromRingBuffer.map((v, i) => (v * HANNING_MATRIX[i])));
-        // The premultiplication of the array is for applying a windowing function before the DFT (slighty rounded Hanning without zeros at edges)
-        let results = Array(1025).fill(0);
+        fft.realTransform(out, excerptFromRingBuffer);
+        out.splice(2050);
+
+        let results = this.fftOutputs.list[pyMod(this.fftOutputs.position++, this.fftOutputs.bufferSize)]!;
         for(let i = 0; i<out.length; i += 2) {
-            const e = Math.sqrt((out[i] * out[i]) + (out[i + 1] * out[i + 1]));
+            const e = ((out[i] * out[i]) + (out[i + 1] * out[i + 1])) / (1 << 17);
             results[i / 2] = Math.max(0.0000000001, e);
         }
-
-        results = results.slice(0, 1025);
-
-        if(results.length != 1025){
-            console.log("ASSERT FAILED!");
-        }
-
-        this.fftOutputs.append(new Float64Array(results));
-    }
-
-    doPeakSpreadingAndRecognition(){
-        this.doPeakSpreading();
-        if(this.spreadFFTsOutput.written >= 46)
-            this.doPeakRecognition();
     }
 
     doPeakSpreading(){
         let originLastFFT = this.fftOutputs.list[pyMod(this.fftOutputs.position - 1, this.fftOutputs.bufferSize)]!,
-            spreadLastFFT = new Float64Array(originLastFFT);
-        for(let position = 0; position < 1025; position++){
-            if(position < 1023){
-                spreadLastFFT[position] = Math.max(...spreadLastFFT.slice(position, position + 3));
-            }
+            spreadLastFFT = this.spreadFFTsOutput.list[pyMod(this.spreadFFTsOutput.position, this.spreadFFTsOutput.bufferSize)]!;
+        spreadLastFFT.set(originLastFFT);
 
-            let maxValue = spreadLastFFT[position];
+        for(let position = 0; position <= 1022; position++){
+            spreadLastFFT[position] = Math.max(...spreadLastFFT.slice(position, position + 3));
+        }
+        for(let position = 0; position <= 1024; position++) {
             for(let formerFftNum of [-1, -3, -6]){
                 let formerFftOutput = this.spreadFFTsOutput.list[pyMod(this.spreadFFTsOutput.position + formerFftNum, this.spreadFFTsOutput.bufferSize)]!;
-                if(isNaN(formerFftOutput[position])) continue;
-                formerFftOutput[position] = maxValue = Math.max(formerFftOutput[position], maxValue);
+                if(isNaN(formerFftOutput[position])) throw new Error();
+                formerFftOutput[position] = Math.max(formerFftOutput[position], spreadLastFFT[position]);
             }
         }
-        this.spreadFFTsOutput.append(spreadLastFFT);
+        this.spreadFFTsOutput.position++;
     }
 
     doPeakRecognition(){
         let fftMinus46 = this.fftOutputs.list[pyMod(this.fftOutputs.position - 46, this.fftOutputs.bufferSize)]!;
         let fftMinus49 = this.spreadFFTsOutput.list[pyMod(this.spreadFFTsOutput.position - 49, this.spreadFFTsOutput.bufferSize)]!;
 
-        const range = (a: number, b: number, c: number = 1) => {
-            let out = [];
-            for(let i = a; i < b; i += c) out.push(i);
-            return out;
-        }
-
-        for(let binPosition = 10; binPosition < 1015; binPosition++){
-            // Ensire that the bin is large enough to be a peak
+        for(let binPosition = 10; binPosition <= 1014; binPosition++){
+            // Ensure that the bin is large enough to be a peak
             if((fftMinus46[binPosition] >= 1/64) && (fftMinus46[binPosition] >= fftMinus49[binPosition - 1])){
                 let maxNeighborInFftMinus49 = 0;
-                for(let neighborOffset of [...range(-10, -3, 3), -3, 1, ...range(2, 9, 3)]){
+                for(let neighborOffset of [-10, -7, -4, -3, 1, 2, 5, 8]){
                     const candidate = fftMinus49[binPosition + neighborOffset];
-                    if(isNaN(candidate)) continue;
+                    if(isNaN(candidate)) throw new Error();
                     maxNeighborInFftMinus49 = Math.max(candidate, maxNeighborInFftMinus49);
                 }
                 if(fftMinus46[binPosition] > maxNeighborInFftMinus49){
                     let maxNeighborInOtherAdjacentFFTs = maxNeighborInFftMinus49;
-                    for(let otherOffset of [-53, -45, ...range(165, 201, 7), ...range(214, 250, 7)]){
+                    for(let otherOffset of 
+                        [-53, -45,
+                        165, 172, 179, 186, 193, 200,
+                        214, 221, 228, 235, 242, 249]
+                    ){
                         const candidate = this.spreadFFTsOutput.list[pyMod(this.spreadFFTsOutput.position + otherOffset, this.spreadFFTsOutput.bufferSize)]![binPosition - 1];
-                        if(isNaN(candidate)) continue;
+                        if(isNaN(candidate)) throw new Error();
                         maxNeighborInOtherAdjacentFFTs = Math.max(
                             candidate,
                             maxNeighborInOtherAdjacentFFTs
                         );
                     }
-
                     if(fftMinus46[binPosition] > maxNeighborInOtherAdjacentFFTs){
                         // This is a peak. Store the peak
 
-                        let fftNumber = this.spreadFFTsOutput.written - 46;
+                        let fftNumber = this.num_spread_ffts_done - 46;
 
                         let peakMagnitude = Math.log(Math.max(1 / 64, fftMinus46[binPosition])) * 1477.3 + 6144,
                             peakMagnitudeBefore = Math.log(Math.max(1 / 64, fftMinus46[binPosition-1])) * 1477.3 + 6144,
@@ -196,7 +149,7 @@ export class SignatureGenerator{
                         let peakVariation1 = peakMagnitude * 2 - peakMagnitudeBefore - peakMagnitudeAfter,
                             peakVariation2 = (peakMagnitudeAfter - peakMagnitudeBefore) * 32 / peakVariation1;
 
-                        let correctedPeakFrequencyBin = binPosition * 64 + peakVariation2;
+                        let correctedPeakFrequencyBin = ((binPosition * 64 + peakVariation2) & 0xFFFF) >>> 0;
                         if(peakVariation1 <= 0){
                             console.log("Assert 2 failed - " + peakVariation1);
                         }
@@ -219,7 +172,7 @@ export class SignatureGenerator{
                             this.nextSignature.frequencyBandToSoundPeaks[FrequencyBand[band]] = [];
                         }
                         this.nextSignature.frequencyBandToSoundPeaks[FrequencyBand[band]].push(
-                            new FrequencyPeak(fftNumber, Math.round(peakMagnitude), Math.round(correctedPeakFrequencyBin), 16000)
+                            new FrequencyPeak(fftNumber, (Math.round(peakMagnitude)) & 0xFFFF >>> 0, Math.round(correctedPeakFrequencyBin), 16000)
                         );
                     }
                 }

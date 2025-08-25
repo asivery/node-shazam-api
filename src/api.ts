@@ -2,6 +2,7 @@ import { SignatureGenerator } from "./algorithm";
 import { DecodedMessage } from "./signature-format";
 import nFetch from 'node-fetch';
 import { ShazamRoot } from "./types";
+import { getRandomUserAgent } from "./agents";
 
 const TIME_ZONE = "Europe/Paris";
 
@@ -10,8 +11,7 @@ function uuidv4() {
       var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
       return v.toString(16);
     }).toUpperCase();
-  }
-  
+}
 
 export class Endpoint{
     static SCHEME = "https";
@@ -19,7 +19,7 @@ export class Endpoint{
 
     constructor(public timezone: string){};
     url(){
-        return `${Endpoint.SCHEME}://${Endpoint.HOSTNAME}/discovery/v5/en/US/iphone/-/tag/${uuidv4()}/${uuidv4()}`;
+        return `${Endpoint.SCHEME}://${Endpoint.HOSTNAME}/discovery/v5/en/US/android/-/tag/${uuidv4()}/${uuidv4()}`;
     }
     params(){
         return {
@@ -29,8 +29,6 @@ export class Endpoint{
             'connected': '',
             'shazamapiversion': 'v3',
             'sharehub': 'true',
-            'hubv5minorversion': 'v5.1',
-            'hidelb': 'true',
             'video': 'v3'
         };
     }
@@ -42,7 +40,7 @@ export class Endpoint{
             "Content-Type": "application/json",
             "Accept-Encoding": "gzip, deflate",
             "Accept-Language": "en",
-            "User-Agent": "Shazam/3685 CFNetwork/1197 Darwin/20.0.0"
+            "User-Agent": getRandomUserAgent(),
         }
     }
 
@@ -98,23 +96,12 @@ export class Shazam{
 
     async fullRecognizeSong(samples: number[], callback?: ((state: "generating" | "transmitting") => void)){
         callback?.("generating");
-        let generator = this.createSignatureGenerator(samples);
-        while(true){
-            callback?.("generating");
-            const signature = generator.getNextSignature();
-            if(!signature){
-                break;
-            }
-            callback?.("transmitting");
-            let results = await this.endpoint.formatAndSendRecognizeRequest(signature);
-            if(results !== null) return results;
+        const generator = new SignatureGenerator();
+        const signature = generator.getSignature(samples);
+        if(!signature){
+            throw new Error("Failed to generate the signature!");
         }
-        return null;
-    }
-
-    createSignatureGenerator(samples: number[]){
-        let signatureGenerator = new SignatureGenerator();
-        signatureGenerator.feedInput(samples);
-        return signatureGenerator;
+        callback?.("transmitting");
+        return this.endpoint.formatAndSendRecognizeRequest(signature);
     }
 }
